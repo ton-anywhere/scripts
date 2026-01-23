@@ -29,19 +29,19 @@ def biased_roll(probabilities)
 end
 
 # Generate data until target size is reached
-while dice_rolls.size < TARGET_ROLLS
+while rolls_generated < TARGET_ROLLS
   roll = biased_roll(PROBABILITIES)
   dice_rolls << roll
   rolls_generated += 1
 end
 
-# Convert to binary and write to file
-File.open('raw_entropy.bin', 'wb') do |file|
+# Convert to bits and write to file
+File.open('./entropy_scripts/raw_entropy.bin', 'wb') do |file|
   dice_rolls.each { |value| file.write("%03b" % value) }
 end
 
-# Convert to binary and write to file
-File.open('raw_entropy_bytes.bin', 'wb') do |file|
+# Convert to byte and write to file
+File.open('./entropy_scripts/raw_entropy_bytes.bin', 'wb') do |file|
   dice_rolls.each { |value| file.write([value].pack('C')) }
 end
 
@@ -63,6 +63,6 @@ puts "\nFile 'raw_entropy.bin' generated successfully!"
 #hashing
 
 key = 'faasd08ddslx002385xoo'
-hmac = OpenSSL::HMAC.hexdigest('SHA256', key, File.read('raw_entropy.bin'))
+hmac = OpenSSL::HMAC.hexdigest('SHA256', key, File.read('./entropy_scripts/raw_entropy.bin'))
 File.write('hmac.txt', hmac)
 puts "Hmac: #{hmac}"
