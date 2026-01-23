@@ -5,8 +5,8 @@ require 'openssl'
 # Configuration
 # 1MB = 1.000.000 bytes =  8.000.000 bits
 # 0,7011 entropy for roll
-# PROBABILITIES = [0.02, 0.02, 0.02, 0.02, 0.02, 0.90] # Biased distribution: 90% for number 6
-PROBABILITIES = [1/6.to_f, 1/6.to_f, 1/6.to_f, 1/6.to_f, 1/6.to_f, 1/6.to_f] # Biased distribution: 90% for number 6
+PROBABILITIES = [0.02, 0.02, 0.02, 0.02, 0.02, 0.90] # Biased distribution: 90% for number 6
+# PROBABILITIES = [1/6.to_f, 1/6.to_f, 1/6.to_f, 1/6.to_f, 1/6.to_f, 1/6.to_f] # Biased distribution: 90% for number 6
 MAX_FACE = 6
 # TARGET_ROLLS = 11_409_202
 TARGET_ROLLS = 1_409_202
