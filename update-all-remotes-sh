@@ -1,0 +1,10 @@
+#!/bin/bash
+BASE_DIR="$HOME/code/APonce911"
+SCRIPT="$HOME/code/APonce911/scripts/update-git-remote.sh"
+
+for dir in "$BASE_DIR"/*/; do
+  if [ -d "$dir/.git" ]; then
+    echo "--- $(basename $dir) ---"
+    (cd "$dir" && bash "$SCRIPT")
+  fi
+done
