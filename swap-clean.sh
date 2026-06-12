@@ -6,6 +6,14 @@ dry_run=0
 
 PROTECTED="Xorg gnome-shell bitcoin-qt tor i2pd"
 
+run_privileged() {
+  if [ "$(id -u)" -eq 0 ]; then
+    "$@"
+  else
+    sudo "$@"
+  fi
+}
+
 # --- 1. DIAGNOSE ---
 echo "=== MEMORY STATE ==="
 free -h
@@ -44,9 +52,15 @@ if [ "$dry_run" -eq 1 ]; then
   exit 0
 fi
 
+if [ "$(id -u)" -ne 0 ]; then
+  echo "=== AUTHORIZING SUDO ==="
+  sudo -v || exit 1
+  echo ""
+fi
+
 # --- 3. DROP CACHES ---
 echo "=== DROPPING CACHES ==="
-sync && pkexec sysctl -w vm.drop_caches=3
+sync && run_privileged sysctl -w vm.drop_caches=3
 echo ""
 
 # Re-read MemAvailable after cache drop
@@ -57,7 +71,7 @@ echo ""
 # --- 4. SAFETY GATE: flush swap only if RAM can absorb it ---
 if [ "$mem_avail_kb" -gt "$swap_used_kb" ]; then
   echo "=== FLUSHING SWAP (safe: MemAvailable > SwapUsed) ==="
-  pkexec swapoff -a && pkexec swapon -a
+  run_privileged swapoff -a && run_privileged swapon -a
   echo "Swap flushed."
 else
   echo "=== SWAP FLUSH SKIPPED ==="
@@ -70,7 +84,7 @@ echo ""
 
 # --- 5. COMPACT MEMORY ---
 echo "=== COMPACTING MEMORY ==="
-pkexec sysctl -w vm.compact_memory=1
+run_privileged sysctl -w vm.compact_memory=1
 echo ""
 
 # --- 6. FINAL STATE ---
