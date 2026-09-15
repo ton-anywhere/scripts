@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Usage: omp-backup
+set -euo pipefail
+
+backup_dir="$HOME/Backups/omp"
+mkdir -p "$backup_dir"
+umask 077
+
+archive="$backup_dir/omp-$(date +%Y%m%d-%H%M%S).tar.gz"
+tar_args=(
+	# Create a new archive.
+	--create
+	# Compress the archive with gzip.
+	--gzip
+	# Write the archive to this file.
+	--file="$archive"
+	# Store .omp relative to the home directory.
+	--directory="$HOME"
+)
+
+tar "${tar_args[@]}" .omp
+printf '%s\n' "$archive"

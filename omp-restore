@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Usage: omp-restore ~/Backups/omp/omp-YYYYMMDD-HHMMSS.tar.gz
+set -euo pipefail
+
+archive="${1:?Usage: omp-restore /path/to/omp-backup.tar.gz}"
+
+# Refuse to restore while OMP has ~/.omp open.
+omp_processes="$(pgrep -a -x omp || true)"
+if [[ -n "$omp_processes" ]]; then
+	printf '%s\n%s\n' 'Stop OMP before restoring:' "$omp_processes" >&2
+	exit 1
+fi
+
+# Validate the archive before moving the current state aside.
+tar --list --gzip --file="$archive" >/dev/null
+
+# Rename existing .omg config
+if [[ -e "$HOME/.omp" ]]; then
+	previous="$HOME/.omp.before-restore-$(date +%Y%m%d-%H%M%S)"
+	mv "$HOME/.omp" "$previous"
+	printf '%s\n' "Moved ~/.omp to $previous"
+fi
+
+tar_args=(
+	# Extract files from the archive.
+	--extract
+	# Read gzip-compressed archive data.
+	--gzip
+	# Read this archive file.
+	--file="$archive"
+	# Restore .omp under the home directory.
+	--directory="$HOME"
+)
+
+# Extract backup
+tar "${tar_args[@]}"
