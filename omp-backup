@@ -16,6 +16,8 @@ tar_args=(
 	--file="$archive"
 	# Store .omp relative to the home directory.
 	--directory="$HOME"
+	# Follow symlinks and store copies of their target files.
+	--dereference
 )
 
 tar "${tar_args[@]}" .omp
