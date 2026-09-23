@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Usage: omp-backup
-set -euo pipefail
+if pgrep -x omp >/dev/null; then
+	printf '%s\n' 'Stop OMP before backing up.' >&2
+	exit 1
+fi
 
-backup_dir="$HOME/Backups/omp"
+backup_dir="/media/airtonp/internal-hdd/Backups/omp"
 mkdir -p "$backup_dir"
 umask 077
 
@@ -18,6 +21,8 @@ tar_args=(
 	--directory="$HOME"
 	# Follow symlinks and store copies of their target files.
 	--dereference
+	# Exclude generated caches.
+  --exclude='cache'
 )
 
 tar "${tar_args[@]}" .omp
