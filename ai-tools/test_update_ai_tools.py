@@ -62,16 +62,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
     def command(self, argv, version="18.9"):
         if argv[:2] == ["ssh", "-o"] or "--json=v2" in argv:
             return json.dumps(BREW_INFO)
-        if argv[0] == "git":
-            return self.git_command(argv, version)
         return f"{Path(argv[0]).name} {version}"
-
-    def git_command(self, argv, version="18.9"):
-        if "rev-list" in argv:
-            return "0"
-        if "show" in argv:
-            return json.dumps({"version": version})
-        return ""
 
     def json_response(self, url):
         if url == update_ai_tools.LLAMA_FORMULA_URL:
@@ -96,8 +87,6 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
                         state["llama"]["revision"],
                     )
                 )
-            if argv[0] == "git":
-                return self.git_command(argv)
             tool = Path(argv[0]).name
             return f"{tool} {state['local'][tool]}"
 
@@ -355,7 +344,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
 
         self.assertNotEqual(result, 0)
         self.assertIn("pi: installed=18.9; latest installable=-; status=error", output)
-        self.assertEqual(output.count("status="), 7)
+        self.assertEqual(output.count("status="), 6)
 
     def test_update_failure_is_visible_and_nonzero(self):
         def fail_update(argv, **kwargs):
@@ -366,172 +355,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
         self.assertNotEqual(result, 0)
         self.assertIn("herdr: installed=18.9; latest installable=18.10; status=error", output)
         self.assertIn("update command failed", output)
-        self.assertEqual(output.count("status="), 7)
-
-
-    def test_fork_dry_run_reports_upstream_commits_without_writes(self):
-        def command(argv, version="18.9"):
-            if argv[0] == "git":
-                if "rev-list" in argv:
-                    return "2"
-                if "show" in argv:
-                    return json.dumps({"version": "18.10"})
-                return ""
-            if argv[:2] == ["ssh", "-o"] or "--json=v2" in argv:
-                return json.dumps(BREW_INFO)
-            return f"{Path(argv[0]).name} {version}"
-
-        result, output = self.run_main(["--dry-run"], command=command, subprocess_run=AssertionError("write"))
-
-        self.assertEqual(result, 0)
-        self.assertIn("omp-fork: installed=18.9; latest installable=18.10; status=update available", output)
-        self.assertEqual(output.count("status="), 7)
-
-    def test_fork_update_rebases_rebuilds_and_verifies(self):
-        state = {"behind": 2, "version": "18.9"}
-        events = []
-
-        def command(argv, version="18.9"):
-            if argv[0] == "git":
-                if "rev-list" in argv:
-                    return str(state["behind"])
-                if "show" in argv:
-                    return json.dumps({"version": "18.10"})
-                return ""
-            if argv[:2] == ["ssh", "-o"] or "--json=v2" in argv:
-                return json.dumps(BREW_INFO)
-            return f"{Path(argv[0]).name} {state['version']}"
-
-        def latest(url):
-            if url in LOCAL_LATEST:
-                return {"version": "18.9"}
-            return {"versions": {"stable": "18.9"}, "revision": 0}
-
-        def update(argv, **kwargs):
-            if argv[0] == "git" and "rebase" in argv:
-                state["behind"] = 0
-                state["version"] = "18.10"
-            events.append(argv[-1] if argv[0] == "git" else Path(argv[-1]).name)
-
-        result, output = self.run_main(
-            [],
-            command=command,
-            latest=latest,
-            urlopen=lambda request, timeout: _Response(b'version "18.9"\nrevision 0\n'),
-            subprocess_run=update,
-        )
-
-        self.assertEqual(result, 0)
-        self.assertEqual(events, ["omp-backup", "main", "origin/main", "check", "build"])
-        self.assertIn("omp-fork: installed=18.10; latest installable=18.10; status=up to date", output)
-
-    def test_fork_uncommitted_tracked_changes_block_rebase(self):
-        events = []
-
-        def command(argv, version="18.9"):
-            if argv[0] == "git":
-                if "rev-list" in argv:
-                    return "2"
-                if "show" in argv:
-                    return json.dumps({"version": "18.10"})
-                if "status" in argv:
-                    return " M packages/coding-agent/src/cli.ts"
-                return ""
-            if argv[:2] == ["ssh", "-o"] or "--json=v2" in argv:
-                return json.dumps(BREW_INFO)
-            return f"{Path(argv[0]).name} {version}"
-
-        def latest(url):
-            if url in LOCAL_LATEST:
-                return {"version": "18.9"}
-            return {"versions": {"stable": "18.9"}, "revision": 0}
-
-        def update(argv, **kwargs):
-            events.append(argv[-1] if argv[0] == "git" else Path(argv[-1]).name)
-
-        result, output = self.run_main(
-            [],
-            command=command,
-            latest=latest,
-            urlopen=lambda request, timeout: _Response(b'version "18.9"\nrevision 0\n'),
-            subprocess_run=update,
-        )
-
-        self.assertNotEqual(result, 0)
-        self.assertEqual(events, ["omp-backup", "main"])
-        self.assertIn("omp-fork: installed=18.9; latest installable=18.10; status=error", output)
-        self.assertIn("uncommitted fork changes", output)
-
-    def test_fork_still_behind_after_rebuild_is_an_error(self):
-        events = []
-
-        def command(argv, version="18.9"):
-            if argv[0] == "git":
-                if "rev-list" in argv:
-                    return "2"
-                if "show" in argv:
-                    return json.dumps({"version": "18.10"})
-                return ""
-            if argv[:2] == ["ssh", "-o"] or "--json=v2" in argv:
-                return json.dumps(BREW_INFO)
-            return f"{Path(argv[0]).name} 18.9"
-
-        def latest(url):
-            if url in LOCAL_LATEST:
-                return {"version": "18.9"}
-            return {"versions": {"stable": "18.9"}, "revision": 0}
-
-        def update(argv, **kwargs):
-            events.append(argv[-1] if argv[0] == "git" else Path(argv[-1]).name)
-
-        result, output = self.run_main(
-            [],
-            command=command,
-            latest=latest,
-            urlopen=lambda request, timeout: _Response(b'version "18.9"\nrevision 0\n'),
-            subprocess_run=update,
-        )
-
-        self.assertNotEqual(result, 0)
-        self.assertEqual(events, ["omp-backup", "main", "origin/main", "check", "build"])
-        self.assertIn("omp-fork: installed=18.9; latest installable=18.10; status=error", output)
-        self.assertIn("main is still behind origin/main", output)
-
-    def test_fork_rebase_failure_aborts_and_skips_rebuild(self):
-        events = []
-
-        def command(argv, version="18.9"):
-            if argv[0] == "git":
-                if "rev-list" in argv:
-                    return "2"
-                if "show" in argv:
-                    return json.dumps({"version": "18.10"})
-                return ""
-            if argv[:2] == ["ssh", "-o"] or "--json=v2" in argv:
-                return json.dumps(BREW_INFO)
-            return f"{Path(argv[0]).name} 18.9"
-
-        def latest(url):
-            if url in LOCAL_LATEST:
-                return {"version": "18.9"}
-            return {"versions": {"stable": "18.9"}, "revision": 0}
-
-        def update(argv, **kwargs):
-            events.append(argv[-1] if argv[0] == "git" else Path(argv[-1]).name)
-            if argv[0] == "git" and "rebase" in argv and "--abort" not in argv:
-                raise subprocess.CalledProcessError(1, argv)
-
-        result, output = self.run_main(
-            [],
-            command=command,
-            latest=latest,
-            urlopen=lambda request, timeout: _Response(b'version "18.9"\nrevision 0\n'),
-            subprocess_run=update,
-        )
-
-        self.assertNotEqual(result, 0)
-        self.assertEqual(events, ["omp-backup", "main", "origin/main", "--abort"])
-        self.assertIn("omp-fork: installed=18.9; latest installable=18.10; status=error", output)
+        self.assertEqual(output.count("status="), 6)
 
 
 if __name__ == "__main__":

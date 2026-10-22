@@ -13,7 +13,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 COMMAND_TIMEOUT = 30
 UPDATE_TIMEOUT = 1800
 URL_TIMEOUT = 20
@@ -24,12 +24,6 @@ MLX_FORMULA_URL = (
     "https://raw.githubusercontent.com/ddalcu/mlx-serve/main/Formula/mlx-serve.rb"
 )
 LLAMA_FORMULA_URL = "https://formulae.brew.sh/api/formula/llama.cpp.json"
-FORK_DIR = Path.home() / "code" / "open-source" / "oh-my-pi"
-FORK_LAUNCHER = Path.home() / ".local" / "bin" / "omp"
-FORK_BACKUP = Path.home() / ".local" / "bin" / "omp-backup"
-FORK_BUN = Path.home() / ".bun" / "bin" / "bun"
-FORK_BUILD_DIR = FORK_DIR / "packages" / "coding-agent"
-FORK_PACKAGE_JSON = "packages/coding-agent/package.json"
 
 LOCAL_LATEST = {
     "herdr": "https://herdr.dev/latest.json",
@@ -418,75 +412,9 @@ def _remote_rows(dry_run: bool) -> tuple[Row, Row]:
     return mlx, llama
 
 
-def _git(*args: str) -> str:
-    return command(["git", "-C", str(FORK_DIR), *args])
-
-
-def _fork_row(dry_run: bool) -> Row:
-    row = Row("omp-fork")
-    try:
-        row.installed_version = _extract_output_version(command([str(FORK_LAUNCHER), "--version"]))
-        row.installed = row.installed_version.display
-    except Exception as exc:
-        row.status = "error"
-        row.error = str(exc) or exc.__class__.__name__
-        return row
-
-    try:
-        _git("fetch", "--all", "-p")
-        behind = int(_git("rev-list", "--count", "main..origin/main"))
-        payload = json.loads(_git("show", f"origin/main:{FORK_PACKAGE_JSON}"))
-        row.latest_version = parse_version(payload.get("version"))
-        row.latest = row.latest_version.display
-    except Exception as exc:
-        row.status = "error"
-        row.error = _join_errors(row.error, str(exc) or exc.__class__.__name__)
-        return row
-
-    if behind == 0:
-        row.status = "up to date"
-        return row
-
-    row.status = "update available"
-    if dry_run:
-        return row
-
-    try:
-        # Documented fork flow: backup ~/.omp, then rebase main onto origin/main.
-        _mutating_command([str(FORK_BACKUP)])
-        _mutating_command(["git", "-C", str(FORK_DIR), "switch", "main"])
-        dirty = [
-            line
-            for line in _git("status", "--porcelain").splitlines()
-            if line and not line.startswith("??")
-        ]
-        if dirty:
-            raise UpdateError(f"uncommitted fork changes: {dirty[0]}")
-        try:
-            _mutating_command(["git", "-C", str(FORK_DIR), "rebase", "origin/main"])
-        except Exception as rebase_error:
-            # Leave the fork clean so the next run can retry from a normal state.
-            try:
-                _mutating_command(["git", "-C", str(FORK_DIR), "rebase", "--abort"])
-            except Exception:
-                pass
-            raise rebase_error from None
-        _mutating_command(["nice", "-n", "5", str(FORK_BUN), "run", "check"], cwd=FORK_BUILD_DIR)
-        _mutating_command(["nice", "-n", "5", str(FORK_BUN), "run", "build"], cwd=FORK_BUILD_DIR)
-        row.installed_version = _extract_output_version(command([str(FORK_LAUNCHER), "--version"]))
-        row.installed = row.installed_version.display
-        if int(_git("rev-list", "--count", "main..origin/main")) != 0:
-            raise UpdateError("rebase completed but main is still behind origin/main")
-        row.status = "up to date"
-    except Exception as exc:
-        row.status = "error"
-        row.error = _join_errors(row.error, str(exc) or exc.__class__.__name__)
-    return row
-
-
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Update the local and remote AI tools plus the OMP fork without restarts."
+        description="Update the local and remote AI tools without restarts."
     )
     parser.add_argument(
         "--dry-run",
@@ -506,7 +434,6 @@ def main(argv: list[str] | None = None) -> int:
         _local_row("omp", [str(BUN_OMP), "--version"], args.dry_run),
     ]
     rows.extend(_remote_rows(args.dry_run))
-    rows.append(_fork_row(args.dry_run))
     for row in rows:
         print(row.render())
     return 1 if any(row.status == "error" for row in rows) else 0
