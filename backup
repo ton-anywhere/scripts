@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Usage: backup <path-to-folder>
+# Backs up the contents of any folder into the Backups directory.
+# Example: backup ~/.claude
+#   -> /media/airtonp/internal-hdd/Backups/claude/claude-20261025-084700.tar.gz
+
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+	printf 'Usage: %s <path-to-folder>\n' "$0" >&2
+	exit 1
+fi
+
+source_dir="$1"
+
+# Make it absolute and resolve ., .. and symlinked parents (existence checked below).
+source_dir="$(realpath -m -- "$source_dir")"
+
+if [[ ! -d "$source_dir" ]]; then
+	printf 'Not a directory: %s\n' "$source_dir" >&2
+	exit 1
+fi
+
+# Derive the backup folder name from the resolved target, dropping leading dots.
+base="$(basename -- "$source_dir")"
+backup_name="$(printf '%s' "$base" | sed 's/^[.]*//')"
+if [[ -z "$backup_name" ]]; then
+	printf 'Refusing to back up a folder with no usable name: %s\n' "$source_dir" >&2
+	exit 1
+fi
+
+backup_root="/media/airtonp/internal-hdd/Backups"
+backup_dir="$backup_root/$backup_name"
+mkdir -p "$backup_dir"
+umask 077
+
+# Archive the folder's contents from inside it.
+cd -- "$source_dir"
+
+archive="$backup_dir/$backup_name-$(date +%Y%m%d-%H%M%S).tar.gz"
+tar_args=(
+	# Create a new archive.
+	--create
+	# Compress the archive with gzip.
+	--gzip
+	# Write the archive to this file.
+	--file="$archive"
+	# Store the folder's contents relative to it.
+	--directory="$PWD"
+	# Follow symlinks and store copies of their target files.
+	--dereference
+	# Exclude generated caches.
+	--exclude='cache'
+)
+
+tar "${tar_args[@]}" .
+printf '%s\n' "$archive"
