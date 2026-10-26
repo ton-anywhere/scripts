@@ -29,6 +29,7 @@ LOCAL_LATEST = {
     "herdr": "https://herdr.dev/latest.json",
     "pi": "https://registry.npmjs.org/@earendil-works%2Fpi-coding-agent/latest",
     "codex": "https://registry.npmjs.org/@openai%2Fcodex/latest",
+    "claude": "https://registry.npmjs.org/@anthropic-ai%2Fclaude-code/latest",
     "omp": "https://registry.npmjs.org/@oh-my-pi%2Fpi-coding-agent/latest",
 }
 
@@ -431,6 +432,7 @@ def main(argv: list[str] | None = None) -> int:
         _local_row("herdr", ["herdr", "--version"], args.dry_run),
         _local_row("pi", ["pi", "--version"], args.dry_run),
         _local_row("codex", ["codex", "--version"], args.dry_run),
+        _local_row("claude", ["claude", "--version"], args.dry_run),
         _local_row("omp", [str(BUN_OMP), "--version"], args.dry_run),
     ]
     rows.extend(_remote_rows(args.dry_run))
