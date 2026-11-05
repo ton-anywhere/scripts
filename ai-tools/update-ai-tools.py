@@ -13,7 +13,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 COMMAND_TIMEOUT = 30
 UPDATE_TIMEOUT = 1800
 URL_TIMEOUT = 20
@@ -24,6 +24,10 @@ MLX_FORMULA_URL = (
     "https://raw.githubusercontent.com/ddalcu/mlx-serve/main/Formula/mlx-serve.rb"
 )
 LLAMA_FORMULA_URL = "https://formulae.brew.sh/api/formula/llama.cpp.json"
+
+HERDR_SESSION = "default"
+AI_MEMORY_UNIT = "ai-memory.service"
+ENGINES = ("mlx-serve", "llama-server-small")
 
 # feed URL plus the field holding the version: registries use "version",
 # GitHub releases use "tag_name".
@@ -196,7 +200,7 @@ def _brew_env_args() -> list[str]:
     ]
 
 
-def _remote_command(*brew_args: str) -> list[str]:
+def _remote_ssh(*argv: str) -> list[str]:
     return [
         "ssh",
         "-o",
@@ -204,9 +208,12 @@ def _remote_command(*brew_args: str) -> list[str]:
         "-o",
         "ConnectTimeout=10",
         REMOTE_HOST,
-        *_brew_env_args(),
-        *brew_args,
+        *argv,
     ]
+
+
+def _remote_command(*brew_args: str) -> list[str]:
+    return _remote_ssh(*_brew_env_args(), *brew_args)
 
 
 def _formulae_from_brew(output: str) -> dict[str, dict]:
@@ -425,14 +432,96 @@ def _remote_rows(dry_run: bool) -> tuple[Row, Row]:
     return mlx, llama
 
 
+def _slots_restartable(service: str) -> bool:
+    """ai-server slots exits 0 only when nothing is busy or unknown on that service."""
+    try:
+        command(_remote_ssh("ai-server", "slots", service))
+    except UpdateError:
+        return False
+    return True
+
+
+def _restart_engines(dry_run: bool) -> bool:
+    ok = True
+    for service in ENGINES:
+        if not _slots_restartable(service):
+            print(f"{service}: restart skipped; ai-server slots is not clear")
+            continue
+        if dry_run:
+            print(f"{service}: would restart (idle)")
+            continue
+        try:
+            _mutating_command(_remote_ssh("ai-server", "restart", service))
+            print(f"{service}: restarted")
+        except Exception as exc:
+            print(f"{service}: restart failed: {str(exc) or exc.__class__.__name__}")
+            ok = False
+    return ok
+
+
+def _herdr_session_running() -> bool:
+    for line in command(["herdr", "session", "list"]).splitlines()[1:]:
+        fields = line.split()
+        if len(fields) > 1 and fields[0] == HERDR_SESSION and fields[1] == "running":
+            return True
+    return False
+
+
+def _restart_stack(dry_run: bool) -> bool:
+    if os.environ.get("HERDR_AGENT") or os.environ.get("HERDR_ENV") == "1":
+        print("restart: refused; this runs inside the herdr session it would stop")
+        return False
+    if dry_run:
+        print(f"herdr: would stop session {HERDR_SESSION}, then relaunch")
+        print(f"ai-memory: would restart {AI_MEMORY_UNIT}")
+        return _restart_engines(True)
+
+    ok = True
+    try:
+        if _herdr_session_running():
+            _mutating_command(["herdr", "session", "stop", HERDR_SESSION])
+            print(f"herdr: stopped session {HERDR_SESSION}")
+        else:
+            print(f"herdr: session {HERDR_SESSION} was not running")
+    except Exception as exc:
+        print(f"herdr: stop failed: {str(exc) or exc.__class__.__name__}")
+        ok = False
+
+    try:
+        _mutating_command(["systemctl", "--user", "restart", AI_MEMORY_UNIT])
+        state = command(["systemctl", "--user", "is-active", AI_MEMORY_UNIT])
+        if state != "active":
+            raise UpdateError(f"{AI_MEMORY_UNIT} is {state or 'unknown'} after restart")
+        print(f"ai-memory: restarted {AI_MEMORY_UNIT}")
+    except Exception as exc:
+        print(f"ai-memory: restart failed: {str(exc) or exc.__class__.__name__}")
+        ok = False
+
+    ok = _restart_engines(False) and ok
+
+    if sys.stdout.isatty():
+        sys.stdout.flush()
+        os.execvp("herdr", ["herdr"])
+    print("herdr: launch it with `herdr`")
+    return ok
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Update the local and remote AI tools without restarts."
+        description="Update the local and remote AI tools, optionally restarting the stack."
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
         help="report updates without running mutating update commands",
+    )
+    parser.add_argument(
+        "--restart",
+        action="store_true",
+        help=(
+            "after updating, stop the herdr default session, restart ai-memory, "
+            "restart the idle inference engines, then relaunch herdr"
+        ),
     )
     parser.add_argument("--version", action="version", version=VERSION)
     return parser
@@ -456,7 +545,8 @@ def main(argv: list[str] | None = None) -> int:
     rows.extend(_remote_rows(args.dry_run))
     for row in rows:
         print(row.render())
-    return 1 if any(row.status == "error" for row in rows) else 0
+    restart_ok = True if not args.restart else _restart_stack(args.dry_run)
+    return 1 if any(row.status == "error" for row in rows) or not restart_ok else 0
 
 
 if __name__ == "__main__":

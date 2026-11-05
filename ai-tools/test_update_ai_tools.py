@@ -1,9 +1,11 @@
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import sys
 import unittest
+import urllib.error
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
@@ -49,6 +51,7 @@ def brew_info(mlx_version="18.9", llama_version="18.9", mlx_revision=0, llama_re
 
 BREW_INFO = brew_info()
 MLX_FORMULA = b'version "18.10"\nrevision 0\n'
+RESTART_ENV = {"HERDR_AGENT": "", "HERDR_ENV": ""}
 
 
 class _Response:
@@ -383,6 +386,126 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
         self.assertIn("update command failed", output)
         self.assertEqual(output.count("status="), 8)
 
+    def restart_command(self, busy=()):
+        def command(argv):
+            if argv[:2] == ["herdr", "session"]:
+                return "name status\ndefault running"
+            if argv[:3] == ["systemctl", "--user", "is-active"]:
+                return "active"
+            if "--json=v2" in argv:
+                return json.dumps(BREW_INFO)
+            if "slots" in argv:
+                if argv[-1] in busy:
+                    raise update_ai_tools.UpdateError("command failed: exit status 1")
+                return f"{argv[-1]}  model  0/4 busy"
+            return f"{Path(argv[0]).name} 18.9"
+
+        return command
+
+    def restart_latest(self):
+        def latest(url):
+            if url in LOCAL_LATEST:
+                return latest_payload("18.9")
+            return {"versions": {"stable": "18.9"}, "revision": 0}
+
+        return latest
+
+    def restart_urlopen(self):
+        return lambda request, timeout: _Response(b'version "18.9"\nrevision 0\n')
+
+    def test_restart_refuses_when_running_inside_herdr(self):
+        with patch.dict(os.environ, {"HERDR_AGENT": "omp"}):
+            result, output = self.run_main(
+                ["--dry-run", "--restart"],
+                command=self.restart_command(),
+                latest=self.restart_latest(),
+                urlopen=self.restart_urlopen(),
+                subprocess_run=AssertionError("write"),
+            )
+
+        self.assertNotEqual(result, 0)
+        self.assertIn("restart: refused", output)
+        self.assertNotIn("herdr: would stop", output)
+
+    def test_restart_dry_run_reports_without_mutating(self):
+        with patch.dict(os.environ, RESTART_ENV):
+            result, output = self.run_main(
+                ["--dry-run", "--restart"],
+                command=self.restart_command(),
+                latest=self.restart_latest(),
+                urlopen=self.restart_urlopen(),
+                subprocess_run=AssertionError("write"),
+            )
+
+        self.assertEqual(result, 0)
+        self.assertIn("herdr: would stop session default, then relaunch", output)
+        self.assertIn("ai-memory: would restart ai-memory.service", output)
+        self.assertIn("mlx-serve: would restart (idle)", output)
+        self.assertIn("llama-server-small: would restart (idle)", output)
+
+    def test_restart_stops_herdr_then_restarts_services_and_relaunches(self):
+        events = []
+
+        with patch.dict(os.environ, RESTART_ENV):
+            result, output = self.run_main(
+                ["--restart"],
+                command=self.restart_command(),
+                latest=self.restart_latest(),
+                urlopen=self.restart_urlopen(),
+                subprocess_run=lambda argv, **kwargs: events.append(argv),
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            events,
+            [
+                ["herdr", "session", "stop", "default"],
+                ["systemctl", "--user", "restart", "ai-memory.service"],
+                update_ai_tools._remote_ssh("ai-server", "restart", "mlx-serve"),
+                update_ai_tools._remote_ssh("ai-server", "restart", "llama-server-small"),
+            ],
+        )
+        self.assertIn("mlx-serve: restarted", output)
+        self.assertIn("llama-server-small: restarted", output)
+        self.assertIn("herdr: launch it with `herdr`", output)
+
+    def test_restart_skips_a_service_whose_slots_check_fails(self):
+        events = []
+
+        with patch.dict(os.environ, RESTART_ENV):
+            result, output = self.run_main(
+                ["--restart"],
+                command=self.restart_command(busy=("llama-server-small",)),
+                latest=self.restart_latest(),
+                urlopen=self.restart_urlopen(),
+                subprocess_run=lambda argv, **kwargs: events.append(argv),
+            )
+
+        self.assertEqual(result, 0)
+        self.assertIn(
+            "llama-server-small: restart skipped; ai-server slots is not clear", output
+        )
+        self.assertIn("mlx-serve: restarted", output)
+        self.assertFalse(any("llama-server-small" in argv for argv in events))
+
+    def test_restart_reports_remote_slots_failure_without_aborting(self):
+        def command(argv):
+            if "slots" in argv:
+                raise update_ai_tools.UpdateError("command failed: exit status 255")
+            return self.restart_command()(argv)
+
+        with patch.dict(os.environ, RESTART_ENV):
+            result, output = self.run_main(
+                ["--restart"],
+                command=command,
+                latest=self.restart_latest(),
+                urlopen=self.restart_urlopen(),
+                subprocess_run=lambda argv, **kwargs: None,
+            )
+
+        self.assertEqual(result, 0)
+        self.assertIn("mlx-serve: restart skipped; ai-server slots is not clear", output)
+        self.assertIn("llama-server-small: restart skipped; ai-server slots is not clear", output)
 
 if __name__ == "__main__":
     unittest.main()
