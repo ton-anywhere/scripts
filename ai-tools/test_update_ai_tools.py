@@ -6,7 +6,7 @@ import subprocess
 import sys
 import unittest
 import urllib.error
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -45,12 +45,26 @@ def brew_info(mlx_version="18.9", llama_version="18.9", mlx_revision=0, llama_re
                 "name": "llama.cpp",
                 "installed": [{"version": llama_version, "revision": llama_revision}],
             },
+            {
+                "name": "omlx",
+                "full_name": "jundot/omlx/omlx",
+                "installed": [{"version": "18.10", "revision": 0}],
+            },
         ]
     }
 
 
+def urlopen_for(mlx_body):
+    def urlopen(request, timeout):
+        is_omlx = request.full_url == update_ai_tools.OMLX_FORMULA_URL
+        return _Response(OMLX_FORMULA if is_omlx else mlx_body)
+
+    return urlopen
+
+
 BREW_INFO = brew_info()
 MLX_FORMULA = b'version "18.10"\nrevision 0\n'
+OMLX_FORMULA = b'  url "https://github.com/jundot/omlx/archive/refs/tags/v18.10.tar.gz"\n'
 RESTART_ENV = {"HERDR_AGENT": "", "HERDR_ENV": ""}
 
 
@@ -105,7 +119,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
     def run_main(self, argv, command=None, latest=None, urlopen=None, subprocess_run=None):
         command = command or self.command
         latest = latest or self.json_response
-        urlopen = urlopen or (lambda request, timeout: _Response(MLX_FORMULA))
+        urlopen = urlopen or urlopen_for(MLX_FORMULA)
         stream = io.StringIO()
         with (
             patch.object(update_ai_tools, "command", side_effect=command),
@@ -141,7 +155,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
             [],
             command=self.stateful_command(state, events),
             latest=latest,
-            urlopen=lambda request, timeout: _Response(b'version "18.9"\nrevision 0\n'),
+            urlopen=urlopen_for(b'version "18.9"\nrevision 0\n'),
             subprocess_run=AssertionError("write"),
         )
 
@@ -252,7 +266,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
             [],
             command=self.stateful_command(state, []),
             latest=latest,
-            urlopen=lambda request, timeout: _Response(b'version "18.9"\nrevision 0\n'),
+            urlopen=urlopen_for(b'version "18.9"\nrevision 0\n'),
             subprocess_run=update,
         )
 
@@ -354,7 +368,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
 
         self.assertNotEqual(result, 0)
         self.assertIn("pi: installed=18.9; latest installable=-; status=error", output)
-        self.assertEqual(output.count("status="), 8)
+        self.assertEqual(output.count("status="), 9)
 
     def test_claude_version_output_with_product_suffix_is_parsed(self):
         def command(argv):
@@ -384,7 +398,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
         self.assertNotEqual(result, 0)
         self.assertIn("herdr: installed=18.9; latest installable=18.10; status=error", output)
         self.assertIn("update command failed", output)
-        self.assertEqual(output.count("status="), 8)
+        self.assertEqual(output.count("status="), 9)
 
     def restart_command(self, busy=()):
         def command(argv):
@@ -411,7 +425,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
         return latest
 
     def restart_urlopen(self):
-        return lambda request, timeout: _Response(b'version "18.9"\nrevision 0\n')
+        return urlopen_for(b'version "18.9"\nrevision 0\n')
 
     def test_restart_refuses_when_running_inside_herdr(self):
         with patch.dict(os.environ, {"HERDR_AGENT": "omp"}):
@@ -463,6 +477,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
                 ["systemctl", "--user", "restart", "ai-memory.service"],
                 update_ai_tools._remote_ssh("ai-server", "restart", "mlx-serve"),
                 update_ai_tools._remote_ssh("ai-server", "restart", "llama-server-small"),
+                update_ai_tools._remote_ssh("ai-server", "restart", "omlx-stt"),
             ],
         )
         self.assertIn("mlx-serve: restarted", output)
@@ -506,6 +521,64 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertIn("mlx-serve: restart skipped; ai-server slots is not clear", output)
         self.assertIn("llama-server-small: restart skipped; ai-server slots is not clear", output)
+
+    def test_update_only_llama_leaves_mlx_and_locals_untouched(self):
+        events = []
+
+        def update(argv, **kwargs):
+            events.append(argv)
+
+        result, output = self.run_main(["update", "llama.cpp"], subprocess_run=update)
+
+        self.assertEqual(output.count("status="), 1)
+        self.assertTrue(all("mlx-serve" not in argv for argv in events))
+        self.assertTrue(all(argv[0] == "ssh" for argv in events))
+        self.assertIn("llama.cpp: installed=18.9", output)
+
+    def test_list_reports_restartability_without_mutating(self):
+        result, output = self.run_main(["list"], subprocess_run=AssertionError("write"))
+
+        self.assertEqual(result, 0)
+        self.assertIn("herdr: installed=18.9; latest installable=18.10; status=update available; restart=yes", output)
+        self.assertIn("codex: installed=18.9; latest installable=18.10; status=update available; restart=no", output)
+
+    def test_restart_one_engine_touches_nothing_else(self):
+        events = []
+
+        with patch.dict(os.environ, RESTART_ENV):
+            result, output = self.run_main(
+                ["restart", "mlx-serve"],
+                command=self.restart_command(),
+                subprocess_run=lambda argv, **kwargs: events.append(argv),
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(events, [update_ai_tools._remote_ssh("ai-server", "restart", "mlx-serve")])
+        self.assertNotIn("herdr", output)
+
+    def test_unknown_tool_is_rejected(self):
+        with self.assertRaises(SystemExit) as caught, redirect_stderr(io.StringIO()):
+            self.run_main(["update", "nope"])
+
+        self.assertEqual(caught.exception.code, 2)
+
+    def test_omlx_restarts_without_a_slots_check(self):
+        events = []
+
+        def command(argv):
+            if "slots" in argv:
+                raise update_ai_tools.UpdateError("command failed: exit status 1")
+            return self.restart_command()(argv)
+
+        with patch.dict(os.environ, RESTART_ENV):
+            result, output = self.run_main(
+                ["restart", "omlx"],
+                command=command,
+                subprocess_run=lambda argv, **kwargs: events.append(argv),
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(events, [update_ai_tools._remote_ssh("ai-server", "restart", "omlx-stt")])
 
 if __name__ == "__main__":
     unittest.main()

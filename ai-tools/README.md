@@ -6,11 +6,14 @@ Run from this directory when needed; it does not install a schedule or run autom
 python3 update-ai-tools.py
 python3 update-ai-tools.py --dry-run
 python3 update-ai-tools.py --restart
+python3 update-ai-tools.py list                      # versions + which tools are restartable
+python3 update-ai-tools.py update pi codex           # only these tools
+python3 update-ai-tools.py restart ai-memory mlx-serve  # only these (herdr, ai-memory, mlx-serve, llama.cpp, omlx)
 python3 -B -m unittest discover -v
 ```
 
 `--version` prints the updater version, and `--help` lists options. `--dry-run` reports
-all seven tools using read-only version/metadata commands and HTTPS requests; it does not
+all nine tools using read-only version/metadata commands and HTTPS requests; it does not
 update packages, mutate the remote host, or restart anything.
 
 Without `--dry-run`, outdated tools may run `herdr update`, `pi update`, `codex update`,
@@ -29,8 +32,9 @@ nonzero. The custom OMP build is not handled here: update it via `~/.bun/bin/omp
 1. `herdr session stop default`. This ends that session's panes, agents included; the
    script never restarts codex, omp or pi itself.
 2. `systemctl --user restart ai-memory.service`, then verifies the unit is `active`.
-3. `ai-server restart mlx-serve` and `ai-server restart llama-server-small` on `ai-server`
-   (which waits for each port), each only when `ai-server slots <service>` exits 0. That
+3. `ai-server restart mlx-serve`, `llama-server-small` and `omlx-stt` on `ai-server`
+   (which waits for each port), each only when `ai-server slots <service>` exits 0, except
+   `omlx-stt`, which only serves the stt services and restarts without that check. That
    exit code covers a busy slot, a model still loading, an unreachable server, and
    `mlx-serve` answering no metrics; a nonzero one skips that engine and the run
    continues.

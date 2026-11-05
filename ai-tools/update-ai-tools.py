@@ -24,10 +24,31 @@ MLX_FORMULA_URL = (
     "https://raw.githubusercontent.com/ddalcu/mlx-serve/main/Formula/mlx-serve.rb"
 )
 LLAMA_FORMULA_URL = "https://formulae.brew.sh/api/formula/llama.cpp.json"
+OMLX_FORMULA_URL = "https://raw.githubusercontent.com/jundot/omlx/main/Formula/omlx.rb"
 
 HERDR_SESSION = "default"
 AI_MEMORY_UNIT = "ai-memory.service"
-ENGINES = ("mlx-serve", "llama-server-small")
+# restart id -> systemd/ai-server service name for the remote engines
+ENGINES = {"mlx-serve": "mlx-serve", "llama.cpp": "llama-server-small", "omlx": "omlx-stt"}
+# omlx only serves the stt services, so it is restarted without the idle check.
+ALWAYS_RESTARTABLE = ("omlx",)
+REMOTE_FORMULAE = {
+    "mlx-serve": "ddalcu/mlx-serve/mlx-serve",
+    "llama.cpp": "llama.cpp",
+    "omlx": "jundot/omlx/omlx",
+}
+# name -> (version argv, update argv or None for "<argv[0]> update")
+LOCAL_TOOLS = {
+    "herdr": (["herdr", "--version"], None),
+    "pi": (["pi", "--version"], None),
+    "codex": (["codex", "--version"], None),
+    "claude": (["claude", "--version"], None),
+    "omp": ([str(BUN_OMP), "--version"], None),
+    "ai-memory": (["ai-memory", "--version"], ["ai-memory", "upgrade"]),
+}
+TOOLS = (*LOCAL_TOOLS, *REMOTE_FORMULAE)
+# Stop order matters: herdr first, and it is relaunched last.
+RESTARTABLE = ("herdr", "ai-memory", *ENGINES)
 
 # feed URL plus the field holding the version: registries use "version",
 # GitHub releases use "tag_name".
@@ -351,53 +372,52 @@ def _join_errors(first: str | None, second: str) -> str:
     return second if not first else f"{first}; {second}"
 
 
-def _remote_rows(dry_run: bool) -> tuple[Row, Row]:
-    mlx = Row("mlx-serve")
-    llama = Row("llama.cpp")
+def _latest_omlx() -> ParsedVersion:
+    # The tap formula has no literal version; it is encoded in the release tarball URL.
+    source = _urlopen(OMLX_FORMULA_URL).decode("utf-8")
+    match = re.search(r'^\s*url\s+"[^"]*/refs/tags/v?([^"/]+?)\.tar\.gz"', source, re.M)
+    if match is None:
+        raise UpdateError("omlx formula has no release tarball url")
+    return parse_version(match.group(1))
+
+
+REMOTE_LATEST = {"mlx-serve": _latest_mlx, "llama.cpp": _latest_llama, "omlx": _latest_omlx}
+
+
+def _remote_rows(dry_run: bool, names: tuple[str, ...] | list[str] = tuple(REMOTE_FORMULAE)) -> list[Row]:
+    rows = {name: Row(name) for name in names}
+    formulae: dict[str, dict] = {}
     try:
         formulae = _formulae_from_brew(
-            command(_remote_command("info", "--formula", "--json=v2", "mlx-serve", "llama.cpp"))
+            command(
+                _remote_command(
+                    "info", "--formula", "--json=v2", *(REMOTE_FORMULAE[n] for n in names)
+                )
+            )
         )
     except Exception as exc:
-        message = str(exc) or exc.__class__.__name__
-        mlx.error = message
-        llama.error = message
-        formulae = {}
+        for row in rows.values():
+            row.error = str(exc) or exc.__class__.__name__
 
-    try:
-        mlx.installed_version = _installed_formula(formulae, "ddalcu/mlx-serve/mlx-serve")
-        mlx.installed = mlx.installed_version.display
-    except Exception as exc:
-        mlx.error = _join_errors(mlx.error, str(exc) or exc.__class__.__name__)
-    try:
-        llama.installed_version = _installed_formula(formulae, "llama.cpp")
-        llama.installed = llama.installed_version.display
-    except Exception as exc:
-        llama.error = _join_errors(llama.error, str(exc) or exc.__class__.__name__)
-
-    try:
-        mlx.latest_version = _latest_mlx()
-        mlx.latest = mlx.latest_version.display
-    except Exception as exc:
-        mlx.error = _join_errors(mlx.error, str(exc) or exc.__class__.__name__)
-    try:
-        llama.latest_version = _latest_llama()
-        llama.latest = llama.latest_version.display
-    except Exception as exc:
-        llama.error = _join_errors(llama.error, str(exc) or exc.__class__.__name__)
-
-    for row in (mlx, llama):
-        if row.error or row.installed_version is None or row.latest_version is None:
-            continue
-        row.status = _status(row.installed_version, row.latest_version)
+    for name, row in rows.items():
+        try:
+            row.installed_version = _installed_formula(formulae, REMOTE_FORMULAE[name])
+            row.installed = row.installed_version.display
+        except Exception as exc:
+            row.error = _join_errors(row.error, str(exc) or exc.__class__.__name__)
+        try:
+            row.latest_version = REMOTE_LATEST[name]()
+            row.latest = row.latest_version.display
+        except Exception as exc:
+            row.error = _join_errors(row.error, str(exc) or exc.__class__.__name__)
+        if not row.error and row.installed_version and row.latest_version:
+            row.status = _status(row.installed_version, row.latest_version)
 
     targets = [
-        row
-        for row in (mlx, llama)
-        if row.status == "update available" and row.error is None
+        row for row in rows.values() if row.status == "update available" and row.error is None
     ]
     if dry_run or not targets:
-        return mlx, llama
+        return list(rows.values())
     try:
         _mutating_command(_remote_command("update"))
     except Exception as exc:
@@ -405,10 +425,10 @@ def _remote_rows(dry_run: bool) -> tuple[Row, Row]:
         for row in targets:
             row.status = "error"
             row.error = _join_errors(row.error, message)
-        return mlx, llama
+        return list(rows.values())
 
     for row in targets:
-        formula = "ddalcu/mlx-serve/mlx-serve" if row is mlx else "llama.cpp"
+        formula = REMOTE_FORMULAE[row.name]
         try:
             _mutating_command(_remote_command("upgrade", "--formula", formula))
         except Exception as exc:
@@ -429,7 +449,7 @@ def _remote_rows(dry_run: bool) -> tuple[Row, Row]:
         except Exception as exc:
             row.status = "error"
             row.error = _join_errors(row.error, str(exc) or exc.__class__.__name__)
-    return mlx, llama
+    return list(rows.values())
 
 
 def _slots_restartable(service: str) -> bool:
@@ -441,14 +461,16 @@ def _slots_restartable(service: str) -> bool:
     return True
 
 
-def _restart_engines(dry_run: bool) -> bool:
+def _restart_engines(dry_run: bool, names) -> bool:
     ok = True
-    for service in ENGINES:
-        if not _slots_restartable(service):
+    for name, service in ENGINES.items():
+        if name not in names:
+            continue
+        if name not in ALWAYS_RESTARTABLE and not _slots_restartable(service):
             print(f"{service}: restart skipped; ai-server slots is not clear")
             continue
         if dry_run:
-            print(f"{service}: would restart (idle)")
+            print(f"{service}: would restart" + ("" if name in ALWAYS_RESTARTABLE else " (idle)"))
             continue
         try:
             _mutating_command(_remote_ssh("ai-server", "restart", service))
@@ -467,38 +489,45 @@ def _herdr_session_running() -> bool:
     return False
 
 
-def _restart_stack(dry_run: bool) -> bool:
-    if os.environ.get("HERDR_AGENT") or os.environ.get("HERDR_ENV") == "1":
+def _restart_stack(dry_run: bool, names=RESTARTABLE) -> bool:
+    herdr = "herdr" in names
+    if herdr and (os.environ.get("HERDR_AGENT") or os.environ.get("HERDR_ENV") == "1"):
         print("restart: refused; this runs inside the herdr session it would stop")
         return False
     if dry_run:
-        print(f"herdr: would stop session {HERDR_SESSION}, then relaunch")
-        print(f"ai-memory: would restart {AI_MEMORY_UNIT}")
-        return _restart_engines(True)
+        if herdr:
+            print(f"herdr: would stop session {HERDR_SESSION}, then relaunch")
+        if "ai-memory" in names:
+            print(f"ai-memory: would restart {AI_MEMORY_UNIT}")
+        return _restart_engines(True, names)
 
     ok = True
-    try:
-        if _herdr_session_running():
-            _mutating_command(["herdr", "session", "stop", HERDR_SESSION])
-            print(f"herdr: stopped session {HERDR_SESSION}")
-        else:
-            print(f"herdr: session {HERDR_SESSION} was not running")
-    except Exception as exc:
-        print(f"herdr: stop failed: {str(exc) or exc.__class__.__name__}")
-        ok = False
+    if herdr:
+        try:
+            if _herdr_session_running():
+                _mutating_command(["herdr", "session", "stop", HERDR_SESSION])
+                print(f"herdr: stopped session {HERDR_SESSION}")
+            else:
+                print(f"herdr: session {HERDR_SESSION} was not running")
+        except Exception as exc:
+            print(f"herdr: stop failed: {str(exc) or exc.__class__.__name__}")
+            ok = False
 
-    try:
-        _mutating_command(["systemctl", "--user", "restart", AI_MEMORY_UNIT])
-        state = command(["systemctl", "--user", "is-active", AI_MEMORY_UNIT])
-        if state != "active":
-            raise UpdateError(f"{AI_MEMORY_UNIT} is {state or 'unknown'} after restart")
-        print(f"ai-memory: restarted {AI_MEMORY_UNIT}")
-    except Exception as exc:
-        print(f"ai-memory: restart failed: {str(exc) or exc.__class__.__name__}")
-        ok = False
+    if "ai-memory" in names:
+        try:
+            _mutating_command(["systemctl", "--user", "restart", AI_MEMORY_UNIT])
+            state = command(["systemctl", "--user", "is-active", AI_MEMORY_UNIT])
+            if state != "active":
+                raise UpdateError(f"{AI_MEMORY_UNIT} is {state or 'unknown'} after restart")
+            print(f"ai-memory: restarted {AI_MEMORY_UNIT}")
+        except Exception as exc:
+            print(f"ai-memory: restart failed: {str(exc) or exc.__class__.__name__}")
+            ok = False
 
-    ok = _restart_engines(False) and ok
+    ok = _restart_engines(False, names) and ok
 
+    if not herdr:
+        return ok
     if sys.stdout.isatty():
         sys.stdout.flush()
         os.execvp("herdr", ["herdr"])
@@ -508,8 +537,19 @@ def _restart_stack(dry_run: bool) -> bool:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Update the local and remote AI tools, optionally restarting the stack."
+        description=(
+            "Update the local and remote AI tools, optionally restarting the stack. "
+            "Without an action, updates every tool. "
+            f"Tools: {', '.join(TOOLS)}. Restartable: {', '.join(RESTARTABLE)}."
+        )
     )
+    parser.add_argument(
+        "action",
+        nargs="?",
+        choices=("list", "update", "restart"),
+        help="list: report versions and restartability; update: update tools; restart: restart services",
+    )
+    parser.add_argument("names", nargs="*", metavar="TOOL", help="limit to these tools (default: all)")
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -519,33 +559,46 @@ def _build_parser() -> argparse.ArgumentParser:
         "--restart",
         action="store_true",
         help=(
-            "after updating, stop the herdr default session, restart ai-memory, "
-            "restart the idle inference engines, then relaunch herdr"
+            "after updating, restart the selected restartable tools: stop the herdr "
+            "default session, restart ai-memory, restart the idle inference engines, "
+            "then relaunch herdr"
         ),
     )
     parser.add_argument("--version", action="version", version=VERSION)
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
+def _collect_rows(names: list[str], dry_run: bool) -> list[Row]:
     rows = [
-        _local_row("herdr", ["herdr", "--version"], args.dry_run),
-        _local_row("pi", ["pi", "--version"], args.dry_run),
-        _local_row("codex", ["codex", "--version"], args.dry_run),
-        _local_row("claude", ["claude", "--version"], args.dry_run),
-        _local_row("omp", [str(BUN_OMP), "--version"], args.dry_run),
-        _local_row(
-            "ai-memory",
-            ["ai-memory", "--version"],
-            args.dry_run,
-            update_argv=["ai-memory", "upgrade"],
-        ),
+        _local_row(name, LOCAL_TOOLS[name][0], dry_run, LOCAL_TOOLS[name][1])
+        for name in LOCAL_TOOLS
+        if name in names
     ]
-    rows.extend(_remote_rows(args.dry_run))
+    remote = [name for name in REMOTE_FORMULAE if name in names]
+    if remote:
+        rows.extend(_remote_rows(dry_run, remote))
+    return rows
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    allowed = RESTARTABLE if args.action == "restart" else TOOLS
+    unknown = [name for name in args.names if name not in allowed]
+    if unknown:
+        parser.error(f"unknown tool {', '.join(unknown)}; choose from {', '.join(allowed)}")
+    names = args.names or list(allowed)
+
+    if args.action == "restart":
+        return 0 if _restart_stack(args.dry_run, names) else 1
+
+    list_only = args.action == "list"
+    rows = _collect_rows(names, args.dry_run or list_only)
     for row in rows:
-        print(row.render())
-    restart_ok = True if not args.restart else _restart_stack(args.dry_run)
+        print(row.render() + (f"; restart={'yes' if row.name in RESTARTABLE else 'no'}" if list_only else ""))
+    restart_ok = True
+    if args.restart and not list_only:
+        restart_ok = _restart_stack(args.dry_run, [n for n in names if n in RESTARTABLE])
     return 1 if any(row.status == "error" for row in rows) or not restart_ok else 0
 
 
