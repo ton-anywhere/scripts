@@ -17,12 +17,18 @@ sys.modules[SPEC.name] = update_ai_tools
 SPEC.loader.exec_module(update_ai_tools)
 
 
+def latest_payload(version):
+    # Registries expose "version"; the GitHub release feed exposes "tag_name".
+    return {"version": version, "tag_name": f"v{version}"}
+
+
 LOCAL_LATEST = {
     "https://herdr.dev/latest.json": {"version": "18.10"},
     "https://registry.npmjs.org/@earendil-works%2Fpi-coding-agent/latest": {"version": "18.10"},
     "https://registry.npmjs.org/@openai%2Fcodex/latest": {"version": "18.10"},
     "https://registry.npmjs.org/@anthropic-ai%2Fclaude-code/latest": {"version": "18.10"},
     "https://registry.npmjs.org/@oh-my-pi%2Fpi-coding-agent/latest": {"version": "18.10"},
+    "https://api.github.com/repos/akitaonrails/ai-memory/releases/latest": latest_payload("18.10"),
 }
 
 
@@ -117,7 +123,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
 
     def test_newer_installed_version_is_not_downgraded_in_normal_mode(self):
         state = {
-            "local": {name: "18.10" for name in ("herdr", "pi", "codex", "claude", "omp")},
+            "local": {name: "18.10" for name in ("herdr", "pi", "codex", "claude", "omp", "ai-memory")},
             "mlx": {"version": "18.10", "revision": 0},
             "llama": {"version": "18.10", "revision": 0},
         }
@@ -125,7 +131,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
 
         def latest(url):
             if url in LOCAL_LATEST:
-                return {"version": "18.9"}
+                return latest_payload("18.9")
             return {"versions": {"stable": "18.9"}, "revision": 0}
 
         result, output = self.run_main(
@@ -142,7 +148,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
 
     def test_normal_update_postqueries_successful_local_and_remote_versions(self):
         state = {
-            "local": {name: "18.9" for name in ("herdr", "pi", "codex", "claude", "omp")},
+            "local": {name: "18.9" for name in ("herdr", "pi", "codex", "claude", "omp", "ai-memory")},
             "mlx": {"version": "18.9", "revision": 0},
             "llama": {"version": "18.9", "revision": 0},
         }
@@ -158,7 +164,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
                     events.append(("refresh",))
                 return
             tool = Path(argv[0]).name
-            self.assertEqual(argv[-1], "update")
+            self.assertEqual(argv[-1], "upgrade" if tool == "ai-memory" else "update")
             events.append(("local-update", tool))
             state["local"][tool] = "18.10"
 
@@ -169,7 +175,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
         )
 
         self.assertEqual(result, 0)
-        for name in ("herdr", "pi", "codex", "claude", "omp", "mlx-serve", "llama.cpp"):
+        for name in ("herdr", "pi", "codex", "claude", "omp", "ai-memory", "mlx-serve", "llama.cpp"):
             self.assertIn(f"{name}: installed=18.10; latest installable=18.10; status=up to date", output)
         refreshes = [index for index, event in enumerate(events) if event[0] == "refresh"]
         upgrades = [event for event in events if event[0] == "upgrade"]
@@ -179,7 +185,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
 
     def test_remote_failure_postqueries_failed_target_and_continues_sibling(self):
         state = {
-            "local": {name: "18.9" for name in ("herdr", "pi", "codex", "claude", "omp")},
+            "local": {name: "18.9" for name in ("herdr", "pi", "codex", "claude", "omp", "ai-memory")},
             "mlx": {"version": "18.9", "revision": 0},
             "llama": {"version": "18.9", "revision": 0},
         }
@@ -187,7 +193,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
 
         def latest(url):
             if url in LOCAL_LATEST:
-                return {"version": "18.9"}
+                return latest_payload("18.9")
             return self.json_response(url)
 
         def update(argv, **kwargs):
@@ -224,16 +230,16 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
 
     def test_unmet_local_target_is_nonzero_after_postquery(self):
         state = {
-            "local": {name: "18.9" for name in ("herdr", "pi", "codex", "claude", "omp")},
+            "local": {name: "18.9" for name in ("herdr", "pi", "codex", "claude", "omp", "ai-memory")},
             "mlx": {"version": "18.9", "revision": 0},
             "llama": {"version": "18.9", "revision": 0},
         }
 
         def latest(url):
-            if url == update_ai_tools.LOCAL_LATEST["herdr"]:
+            if url == update_ai_tools.LOCAL_LATEST["herdr"][0]:
                 return {"version": "18.10"}
             if url in LOCAL_LATEST:
-                return {"version": "18.9"}
+                return latest_payload("18.9")
             return {"versions": {"stable": "18.9"}, "revision": 0}
 
         def update(argv, **kwargs):
@@ -253,7 +259,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
 
     def test_unmet_remote_target_is_nonzero_after_postquery(self):
         state = {
-            "local": {name: "18.9" for name in ("herdr", "pi", "codex", "claude", "omp")},
+            "local": {name: "18.9" for name in ("herdr", "pi", "codex", "claude", "omp", "ai-memory")},
             "mlx": {"version": "18.9", "revision": 0},
             "llama": {"version": "18.9", "revision": 0},
         }
@@ -261,7 +267,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
 
         def latest(url):
             if url in LOCAL_LATEST:
-                return {"version": "18.9"}
+                return latest_payload("18.9")
             return {"versions": {"stable": "18.9"}, "revision": 0}
 
         def update(argv, **kwargs):
@@ -288,7 +294,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
 
     def test_homebrew_revision_only_update_is_available(self):
         state = {
-            "local": {name: "18.10" for name in ("herdr", "pi", "codex", "claude", "omp")},
+            "local": {name: "18.10" for name in ("herdr", "pi", "codex", "claude", "omp", "ai-memory")},
             "mlx": {"version": "18.10", "revision": 0},
             "llama": {"version": "18.10", "revision": 0},
         }
@@ -296,7 +302,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
 
         def latest(url):
             if url in LOCAL_LATEST:
-                return {"version": "18.10"}
+                return latest_payload("18.10")
             return {"versions": {"stable": "18.10"}, "revision": 1}
 
         def update(argv, **kwargs):
@@ -325,7 +331,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
 
     def test_malformed_latest_version_is_an_error(self):
         def malformed(url):
-            if url == update_ai_tools.LOCAL_LATEST["herdr"]:
+            if url == update_ai_tools.LOCAL_LATEST["herdr"][0]:
                 return {"version": "not-a-version"}
             return self.json_response(url)
 
@@ -337,7 +343,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
 
     def test_latest_outage_is_visible_and_other_tools_continue(self):
         def unavailable(url):
-            if url == update_ai_tools.LOCAL_LATEST["pi"]:
+            if url == update_ai_tools.LOCAL_LATEST["pi"][0]:
                 raise update_ai_tools.UpdateError("network request failed")
             return self.json_response(url)
 
@@ -345,7 +351,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
 
         self.assertNotEqual(result, 0)
         self.assertIn("pi: installed=18.9; latest installable=-; status=error", output)
-        self.assertEqual(output.count("status="), 7)
+        self.assertEqual(output.count("status="), 8)
 
     def test_claude_version_output_with_product_suffix_is_parsed(self):
         def command(argv):
@@ -354,7 +360,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
             return self.command(argv)
 
         def latest(url):
-            if url == update_ai_tools.LOCAL_LATEST["claude"]:
+            if url == update_ai_tools.LOCAL_LATEST["claude"][0]:
                 return {"version": "2.1.310"}
             return self.json_response(url)
 
@@ -375,7 +381,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
         self.assertNotEqual(result, 0)
         self.assertIn("herdr: installed=18.9; latest installable=18.10; status=error", output)
         self.assertIn("update command failed", output)
-        self.assertEqual(output.count("status="), 7)
+        self.assertEqual(output.count("status="), 8)
 
 
 if __name__ == "__main__":

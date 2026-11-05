@@ -9,12 +9,14 @@ python3 -B -m unittest discover -v
 ```
 
 `--version` prints the updater version, and `--help` lists options. `--dry-run` reports
-all six tools using read-only version/metadata commands and HTTPS requests; it does not
+all seven tools using read-only version/metadata commands and HTTPS requests; it does not
 update packages or mutate the remote host.
 
 Without `--dry-run`, outdated tools may run `herdr update`, `pi update`, `codex update`,
-the explicit `~/.bun/bin/omp update`, or remote Homebrew updates. “Latest installable”
-is the tool/package release target; a newer installed version is not downgraded.
+`claude update`, the explicit `~/.bun/bin/omp update`, `ai-memory upgrade` (the upstream
+GitHub-release path: checksum-verified binary replace plus hook refresh), or remote
+Homebrew updates. “Latest installable” is the tool/package release target; a newer
+installed version is not downgraded.
 
 Failures are shown per tool, the remaining tools continue, and the command exits
 nonzero. This script does not restart services or perform a Herdr handoff. The custom

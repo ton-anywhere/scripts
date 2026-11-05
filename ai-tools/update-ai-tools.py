@@ -13,7 +13,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 COMMAND_TIMEOUT = 30
 UPDATE_TIMEOUT = 1800
 URL_TIMEOUT = 20
@@ -25,12 +25,18 @@ MLX_FORMULA_URL = (
 )
 LLAMA_FORMULA_URL = "https://formulae.brew.sh/api/formula/llama.cpp.json"
 
+# feed URL plus the field holding the version: registries use "version",
+# GitHub releases use "tag_name".
 LOCAL_LATEST = {
-    "herdr": "https://herdr.dev/latest.json",
-    "pi": "https://registry.npmjs.org/@earendil-works%2Fpi-coding-agent/latest",
-    "codex": "https://registry.npmjs.org/@openai%2Fcodex/latest",
-    "claude": "https://registry.npmjs.org/@anthropic-ai%2Fclaude-code/latest",
-    "omp": "https://registry.npmjs.org/@oh-my-pi%2Fpi-coding-agent/latest",
+    "herdr": ("https://herdr.dev/latest.json", "version"),
+    "pi": ("https://registry.npmjs.org/@earendil-works%2Fpi-coding-agent/latest", "version"),
+    "codex": ("https://registry.npmjs.org/@openai%2Fcodex/latest", "version"),
+    "claude": ("https://registry.npmjs.org/@anthropic-ai%2Fclaude-code/latest", "version"),
+    "omp": ("https://registry.npmjs.org/@oh-my-pi%2Fpi-coding-agent/latest", "version"),
+    "ai-memory": (
+        "https://api.github.com/repos/akitaonrails/ai-memory/releases/latest",
+        "tag_name",
+    ),
 }
 
 _VERSION_RE = re.compile(
@@ -176,8 +182,8 @@ def _extract_output_version(output: str) -> ParsedVersion:
     return parse_version(candidates[-1])
 
 
-def _latest_json_version(data: dict) -> ParsedVersion:
-    return parse_version(data.get("version"))
+def _latest_json_version(data: dict, field: str = "version") -> ParsedVersion:
+    return parse_version(data.get(field))
 
 
 def _brew_env_args() -> list[str]:
@@ -299,7 +305,12 @@ class Row:
         return line
 
 
-def _local_row(name: str, command_argv: list[str], dry_run: bool) -> Row:
+def _local_row(
+    name: str,
+    command_argv: list[str],
+    dry_run: bool,
+    update_argv: list[str] | None = None,
+) -> Row:
     row = Row(name)
     try:
         row.installed_version = _extract_output_version(command(command_argv))
@@ -307,7 +318,8 @@ def _local_row(name: str, command_argv: list[str], dry_run: bool) -> Row:
     except Exception as exc:
         row.error = str(exc) or exc.__class__.__name__
     try:
-        row.latest_version = _latest_json_version(get_json(LOCAL_LATEST[name]))
+        url, field = LOCAL_LATEST[name]
+        row.latest_version = _latest_json_version(get_json(url), field)
         row.latest = row.latest_version.display
     except Exception as exc:
         row.error = _join_errors(row.error, str(exc) or exc.__class__.__name__)
@@ -316,7 +328,7 @@ def _local_row(name: str, command_argv: list[str], dry_run: bool) -> Row:
     row.status = _status(row.installed_version, row.latest_version)
     if row.status == "update available" and not dry_run:
         try:
-            _mutating_command(command_argv[:-1] + ["update"])
+            _mutating_command(update_argv or command_argv[:-1] + ["update"])
             row.installed_version = _extract_output_version(command(command_argv))
             row.installed = row.installed_version.display
             if row.installed_version.key() < row.latest_version.key():
@@ -434,6 +446,12 @@ def main(argv: list[str] | None = None) -> int:
         _local_row("codex", ["codex", "--version"], args.dry_run),
         _local_row("claude", ["claude", "--version"], args.dry_run),
         _local_row("omp", [str(BUN_OMP), "--version"], args.dry_run),
+        _local_row(
+            "ai-memory",
+            ["ai-memory", "--version"],
+            args.dry_run,
+            update_argv=["ai-memory", "upgrade"],
+        ),
     ]
     rows.extend(_remote_rows(args.dry_run))
     for row in rows:
