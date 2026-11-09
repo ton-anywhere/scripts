@@ -54,8 +54,10 @@ def brew_info(mlx_version="18.9", llama_version="18.9", mlx_revision=0, llama_re
     }
 
 
-def urlopen_for(mlx_body):
+def urlopen_for(mlx_body, hex_version="18.10"):
     def urlopen(request, timeout):
+        if request.full_url == update_ai_tools.HEX_RELEASE_URL:
+            raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, io.BytesIO(hex_release_404(hex_version)))
         is_omlx = request.full_url == update_ai_tools.OMLX_FORMULA_URL
         return _Response(OMLX_FORMULA if is_omlx else mlx_body)
 
@@ -65,6 +67,8 @@ def urlopen_for(mlx_body):
 BREW_INFO = brew_info()
 MLX_FORMULA = b'version "18.10"\nrevision 0\n'
 OMLX_FORMULA = b'  url "https://github.com/jundot/omlx/archive/refs/tags/v18.10.tar.gz"\n'
+def hex_release_404(version):
+    return f'{{"error":"hex/desktop/stable {version} has no target manifest; targets: linux-x64"}}\n'.encode()
 RESTART_ENV = {"HERDR_AGENT": "", "HERDR_ENV": ""}
 
 
@@ -126,6 +130,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
             patch.object(update_ai_tools, "get_json", side_effect=latest),
             patch.object(update_ai_tools.urllib.request, "urlopen", side_effect=urlopen),
             patch.object(update_ai_tools.subprocess, "run", side_effect=subprocess_run),
+            patch.object(update_ai_tools, "UPDATE_TIMEOUT", 0),
             redirect_stdout(stream),
         ):
             result = update_ai_tools.main(argv)
@@ -140,7 +145,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
 
     def test_newer_installed_version_is_not_downgraded_in_normal_mode(self):
         state = {
-            "local": {name: "18.10" for name in ("herdr", "pi", "codex", "claude", "omp", "ai-memory")},
+            "local": {name: "18.10" for name in ("herdr", "hex", "pi", "codex", "claude", "omp", "ai-memory")},
             "mlx": {"version": "18.10", "revision": 0},
             "llama": {"version": "18.10", "revision": 0},
         }
@@ -165,7 +170,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
 
     def test_normal_update_postqueries_successful_local_and_remote_versions(self):
         state = {
-            "local": {name: "18.9" for name in ("herdr", "pi", "codex", "claude", "omp", "ai-memory")},
+            "local": {name: "18.9" for name in ("herdr", "hex", "pi", "codex", "claude", "omp", "ai-memory")},
             "mlx": {"version": "18.9", "revision": 0},
             "llama": {"version": "18.9", "revision": 0},
         }
@@ -181,7 +186,8 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
                     events.append(("refresh",))
                 return
             tool = Path(argv[0]).name
-            self.assertEqual(argv[-1], "upgrade" if tool == "ai-memory" else "update")
+            expected = {"ai-memory": "upgrade", "hex": "check-for-updates"}.get(tool, "update")
+            self.assertEqual(argv[-1], expected)
             events.append(("local-update", tool))
             state["local"][tool] = "18.10"
 
@@ -192,7 +198,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
         )
 
         self.assertEqual(result, 0)
-        for name in ("herdr", "pi", "codex", "claude", "omp", "ai-memory", "mlx-serve", "llama.cpp"):
+        for name in ("herdr", "hex", "pi", "codex", "claude", "omp", "ai-memory", "mlx-serve", "llama.cpp"):
             self.assertIn(f"{name}: installed=18.10; latest installable=18.10; status=up to date", output)
         refreshes = [index for index, event in enumerate(events) if event[0] == "refresh"]
         upgrades = [event for event in events if event[0] == "upgrade"]
@@ -202,7 +208,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
 
     def test_remote_failure_postqueries_failed_target_and_continues_sibling(self):
         state = {
-            "local": {name: "18.9" for name in ("herdr", "pi", "codex", "claude", "omp", "ai-memory")},
+            "local": {name: "18.9" for name in ("herdr", "hex", "pi", "codex", "claude", "omp", "ai-memory")},
             "mlx": {"version": "18.9", "revision": 0},
             "llama": {"version": "18.9", "revision": 0},
         }
@@ -247,7 +253,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
 
     def test_unmet_local_target_is_nonzero_after_postquery(self):
         state = {
-            "local": {name: "18.9" for name in ("herdr", "pi", "codex", "claude", "omp", "ai-memory")},
+            "local": {name: "18.9" for name in ("herdr", "hex", "pi", "codex", "claude", "omp", "ai-memory")},
             "mlx": {"version": "18.9", "revision": 0},
             "llama": {"version": "18.9", "revision": 0},
         }
@@ -276,7 +282,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
 
     def test_unmet_remote_target_is_nonzero_after_postquery(self):
         state = {
-            "local": {name: "18.9" for name in ("herdr", "pi", "codex", "claude", "omp", "ai-memory")},
+            "local": {name: "18.9" for name in ("herdr", "hex", "pi", "codex", "claude", "omp", "ai-memory")},
             "mlx": {"version": "18.9", "revision": 0},
             "llama": {"version": "18.9", "revision": 0},
         }
@@ -311,7 +317,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
 
     def test_homebrew_revision_only_update_is_available(self):
         state = {
-            "local": {name: "18.10" for name in ("herdr", "pi", "codex", "claude", "omp", "ai-memory")},
+            "local": {name: "18.10" for name in ("herdr", "hex", "pi", "codex", "claude", "omp", "ai-memory")},
             "mlx": {"version": "18.10", "revision": 0},
             "llama": {"version": "18.10", "revision": 0},
         }
@@ -368,7 +374,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
 
         self.assertNotEqual(result, 0)
         self.assertIn("pi: installed=18.9; latest installable=-; status=error", output)
-        self.assertEqual(output.count("status="), 9)
+        self.assertEqual(output.count("status="), 10)
 
     def test_claude_version_output_with_product_suffix_is_parsed(self):
         def command(argv):
@@ -398,7 +404,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
         self.assertNotEqual(result, 0)
         self.assertIn("herdr: installed=18.9; latest installable=18.10; status=error", output)
         self.assertIn("update command failed", output)
-        self.assertEqual(output.count("status="), 9)
+        self.assertEqual(output.count("status="), 10)
 
     def restart_command(self, busy=()):
         def command(argv):
@@ -425,7 +431,7 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
         return latest
 
     def restart_urlopen(self):
-        return urlopen_for(b'version "18.9"\nrevision 0\n')
+        return urlopen_for(b'version "18.9"\nrevision 0\n', hex_version="18.9")
 
     def test_restart_refuses_when_running_inside_herdr(self):
         with patch.dict(os.environ, {"HERDR_AGENT": "omp"}):
@@ -579,6 +585,53 @@ class UpdateAiToolsBehaviorTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertEqual(events, [update_ai_tools._remote_ssh("ai-server", "restart", "omlx-stt")])
+
+class HexToolTests(unittest.TestCase):
+    def test_latest_hex_reads_stable_version_from_release_host(self):
+        def urlopen(request, timeout):
+            raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, io.BytesIO(hex_release_404("18.10")))
+
+        with patch.object(update_ai_tools.urllib.request, "urlopen", side_effect=urlopen):
+            latest = update_ai_tools._latest_hex()
+
+        self.assertEqual(latest.display, "18.10")
+
+    def test_latest_hex_without_a_stable_version_is_an_error(self):
+        def urlopen(request, timeout):
+            raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, io.BytesIO(b'{"error":"not found"}'))
+
+        with (
+            patch.object(update_ai_tools.urllib.request, "urlopen", side_effect=urlopen),
+            self.assertRaises(update_ai_tools.UpdateError),
+        ):
+            update_ai_tools._latest_hex()
+
+    def test_hex_update_waits_for_the_background_install(self):
+        reported = iter(["hex 18.9", "hex 18.9", "hex 18.9", "hex 18.10"])
+        updates = []
+        with (
+            patch.object(update_ai_tools, "command", side_effect=lambda argv: next(reported)),
+            patch.object(update_ai_tools, "_latest_hex", return_value=update_ai_tools.parse_version("18.10")),
+            patch.object(update_ai_tools.subprocess, "run", side_effect=lambda argv, **kwargs: updates.append(argv)),
+            patch.object(update_ai_tools.time, "sleep"),
+        ):
+            row = update_ai_tools._local_row("hex", ["hex", "--version"], False, ["hex", "check-for-updates"])
+
+        self.assertEqual(updates, [["hex", "check-for-updates"]])
+        self.assertEqual(row.status, "up to date")
+        self.assertEqual(row.installed, "18.10")
+
+    def test_hex_update_that_never_lands_is_an_error(self):
+        with (
+            patch.object(update_ai_tools, "command", return_value="hex 18.9"),
+            patch.object(update_ai_tools, "_latest_hex", return_value=update_ai_tools.parse_version("18.10")),
+            patch.object(update_ai_tools.subprocess, "run"),
+            patch.object(update_ai_tools, "UPDATE_TIMEOUT", 0),
+        ):
+            row = update_ai_tools._local_row("hex", ["hex", "--version"], False, ["hex", "check-for-updates"])
+
+        self.assertEqual(row.status, "error")
+        self.assertIn("update completed but target version was not reached", row.error)
 
 if __name__ == "__main__":
     unittest.main()

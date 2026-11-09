@@ -9,6 +9,8 @@ import os
 import re
 import subprocess
 import sys
+import time
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +19,7 @@ VERSION = "1.4.0"
 COMMAND_TIMEOUT = 30
 UPDATE_TIMEOUT = 1800
 URL_TIMEOUT = 20
+UPDATE_POLL_INTERVAL = 5
 BUN_OMP = Path.home() / ".bun" / "bin" / "omp"
 REMOTE_BREW = "/opt/homebrew/bin/brew"
 REMOTE_HOST = "ai-server"
@@ -25,6 +28,7 @@ MLX_FORMULA_URL = (
 )
 LLAMA_FORMULA_URL = "https://formulae.brew.sh/api/formula/llama.cpp.json"
 OMLX_FORMULA_URL = "https://raw.githubusercontent.com/jundot/omlx/main/Formula/omlx.rb"
+HEX_RELEASE_URL = "https://anoma.ly/release/hex/desktop/stable/manifest"
 
 HERDR_SESSION = "default"
 AI_MEMORY_UNIT = "ai-memory.service"
@@ -40,6 +44,7 @@ REMOTE_FORMULAE = {
 # name -> (version argv, update argv or None for "<argv[0]> update")
 LOCAL_TOOLS = {
     "herdr": (["herdr", "--version"], None),
+    "hex": (["hex", "--version"], ["hex", "check-for-updates"]),
     "pi": (["pi", "--version"], None),
     "codex": (["codex", "--version"], None),
     "claude": (["claude", "--version"], None),
@@ -49,6 +54,9 @@ LOCAL_TOOLS = {
 TOOLS = (*LOCAL_TOOLS, *REMOTE_FORMULAE)
 # Stop order matters: herdr first, and it is relaunched last.
 RESTARTABLE = ("herdr", "ai-memory", *ENGINES)
+
+# Hex installs its own update, so its update command returns before the new version is on disk.
+BACKGROUND_UPDATE_TOOLS = ("hex",)
 
 # feed URL plus the field holding the version: registries use "version",
 # GitHub releases use "tag_name".
@@ -72,6 +80,7 @@ _VERSION_RE = re.compile(
 )
 _FORMULA_VERSION_RE = re.compile(r'^\s*version\s+["\']([^"\']+)["\']\s*$')
 _FORMULA_REVISION_RE = re.compile(r"^\s*revision\s+(\d+)\s*$")
+_HEX_STABLE_RE = re.compile(r"hex/desktop/stable (\d+(?:\.\d+)+) has no target")
 
 
 class UpdateError(Exception):
@@ -169,7 +178,7 @@ def _mutating_command(argv: list[str], cwd: Path | None = None) -> str:
     return ""
 
 
-def _urlopen(url: str) -> bytes:
+def _urlopen(url: str, *, error_body: bool = False) -> bytes:
     if not url.startswith("https://"):
         raise UpdateError(f"refusing non-HTTPS URL: {url}")
     try:
@@ -182,6 +191,10 @@ def _urlopen(url: str) -> bytes:
         )
         with urllib.request.urlopen(request, timeout=URL_TIMEOUT) as response:
             return response.read()
+    except urllib.error.HTTPError as exc:
+        if error_body:
+            return exc.read()
+        raise UpdateError(f"network request failed: {exc}") from exc
     except (OSError, ValueError) as exc:
         raise UpdateError(f"network request failed: {exc}") from exc
 
@@ -346,8 +359,7 @@ def _local_row(
     except Exception as exc:
         row.error = str(exc) or exc.__class__.__name__
     try:
-        url, field = LOCAL_LATEST[name]
-        row.latest_version = _latest_json_version(get_json(url), field)
+        row.latest_version = _latest_local(name)
         row.latest = row.latest_version.display
     except Exception as exc:
         row.error = _join_errors(row.error, str(exc) or exc.__class__.__name__)
@@ -357,7 +369,10 @@ def _local_row(
     if row.status == "update available" and not dry_run:
         try:
             _mutating_command(update_argv or command_argv[:-1] + ["update"])
-            row.installed_version = _extract_output_version(command(command_argv))
+            if name in BACKGROUND_UPDATE_TOOLS:
+                row.installed_version = _await_version(command_argv, row.latest_version)
+            else:
+                row.installed_version = _extract_output_version(command(command_argv))
             row.installed = row.installed_version.display
             if row.installed_version.key() < row.latest_version.key():
                 raise UpdateError("update completed but target version was not reached")
@@ -379,6 +394,32 @@ def _latest_omlx() -> ParsedVersion:
     if match is None:
         raise UpdateError("omlx formula has no release tarball url")
     return parse_version(match.group(1))
+
+
+def _latest_hex() -> ParsedVersion:
+    # The release host has no version feed; the 404 for its unknown "manifest" target names the stable version.
+    body = _urlopen(HEX_RELEASE_URL, error_body=True).decode("utf-8", "replace")
+    match = _HEX_STABLE_RE.search(body)
+    if match is None:
+        raise UpdateError("hex release host names no stable version")
+    return parse_version(match.group(1))
+
+
+def _latest_local(name: str) -> ParsedVersion:
+    if name == "hex":
+        return _latest_hex()
+    url, field = LOCAL_LATEST[name]
+    return _latest_json_version(get_json(url), field)
+
+
+def _await_version(argv: list[str], target: ParsedVersion) -> ParsedVersion:
+    """Poll a version command until it reaches target or UPDATE_TIMEOUT passes."""
+    deadline = time.monotonic() + UPDATE_TIMEOUT
+    while True:
+        installed = _extract_output_version(command(argv))
+        if installed.key() >= target.key() or time.monotonic() >= deadline:
+            return installed
+        time.sleep(UPDATE_POLL_INTERVAL)
 
 
 REMOTE_LATEST = {"mlx-serve": _latest_mlx, "llama.cpp": _latest_llama, "omlx": _latest_omlx}

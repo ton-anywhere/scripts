@@ -13,17 +13,20 @@ python3 -B -m unittest discover -v
 ```
 
 `--version` prints the updater version, and `--help` lists options. `--dry-run` reports
-all nine tools using read-only version/metadata commands and HTTPS requests; it does not
+all ten tools using read-only version/metadata commands and HTTPS requests; it does not
 update packages, mutate the remote host, or restart anything.
 
 Without `--dry-run`, outdated tools may run `herdr update`, `pi update`, `codex update`,
-`claude update`, the explicit `~/.bun/bin/omp update`, `ai-memory upgrade` (the upstream
+`claude update`, `hex check-for-updates`, the explicit `~/.bun/bin/omp update`, `ai-memory upgrade` (the upstream
 GitHub-release path: checksum-verified binary replace plus hook refresh), or remote
 Homebrew updates. “Latest installable” is the tool/package release target; a newer
 installed version is not downgraded.
 
 Failures are shown per tool, the remaining tools continue, and the command exits
 nonzero. The custom OMP build is not handled here: update it via `~/.bun/bin/omp update`.
+
+Hex installs its own update in the background, so after `hex check-for-updates` the script
+polls `hex --version` for up to 30 minutes and reports an error if the target is never reached.
 
 ## Restart mode
 
